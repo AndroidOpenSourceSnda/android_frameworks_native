@@ -444,12 +444,16 @@ void SurfaceFlinger::onMessageReceived(int32_t what)
             if (CC_LIKELY(hw.canDraw())) {
                 // repaint the framebuffer (if needed)
                 handleRepaint();
+#ifndef STE_HARDWARE
                 // inform the h/w that we're done compositing
                 hw.compositionComplete();
+#endif
                 postFramebuffer();
             } else {
+#ifdef STE_HARDWARE
                 // pretend we did the post
                 hw.compositionComplete();
+#endif
             }
 
         } break;
@@ -833,8 +837,10 @@ void SurfaceFlinger::handleRepaint()
 
     // set the frame buffer
     const DisplayHardware& hw(graphicPlane(0).displayHardware());
+#ifndef STE_HARDWARE
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
+#endif
 
     uint32_t flags = hw.getFlags();
     if (flags & DisplayHardware::SWAP_RECTANGLE) {
@@ -864,8 +870,15 @@ void SurfaceFlinger::handleRepaint()
     mDirtyRegion.clear();
 }
 
+#ifdef STE_HARDWARE
+static bool checkDrawingWithGL(hwc_layer_t* const layers, size_t layerCount);
+#endif
+
 void SurfaceFlinger::setupHardwareComposer()
 {
+#ifdef STE_HARDWARE
+    bool useGL = true;
+#endif
     const DisplayHardware& hw(graphicPlane(0).displayHardware());
     HWComposer& hwc(hw.getHwComposer());
     hwc_layer_t* const cur(hwc.getLayers());
@@ -895,7 +908,39 @@ void SurfaceFlinger::setupHardwareComposer()
     }
     status_t err = hwc.prepare();
     ALOGE_IF(err, "HWComposer::prepare failed (%s)", strerror(-err));
+#ifdef STE_HARDWARE
+    /*
+     * Check if GL will be used
+     */
+    useGL = checkDrawingWithGL(cur, count);
+
+    if (!useGL) {
+        return;
+    }
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    if (CC_UNLIKELY(!mWormholeRegion.isEmpty())) {
+        // should never happen unless the window manager has a bug
+        // draw something...
+        drawWormhole();
+    }
+#endif
 }
+
+#ifdef STE_HARDWARE
+static bool checkDrawingWithGL(hwc_layer_t* const layers, size_t layerCount)
+{
+    bool useGL = false;
+    if (layers) {
+        for (size_t i=0 ; i<layerCount ; i++) {
+            if (layers[i].compositionType == HWC_FRAMEBUFFER) {
+                useGL = true;
+            }
+        }
+    }
+    return useGL;
+}
+#endif
 
 void SurfaceFlinger::composeSurfaces(const Region& dirty)
 {
@@ -916,11 +961,13 @@ void SurfaceFlinger::composeSurfaces(const Region& dirty)
             glClearColor(0, 0, 0, 0);
             glClear(GL_COLOR_BUFFER_BIT);
         } else {
+#ifndef STE_HARDWARE
             // screen is already cleared here
             if (!mWormholeRegion.isEmpty()) {
                 // can happen with SurfaceView
                 drawWormhole();
             }
+#endif
         }
 
         /*
@@ -2648,9 +2695,15 @@ sp<GraphicBuffer> GraphicBufferAlloc::createGraphicBuffer(uint32_t w, uint32_t h
         if (err == NO_MEMORY) {
             GraphicBuffer::dumpAllocationsToSystemLog();
         }
+#ifdef STE_HARDWARE
+        ALOGE("GraphicBufferAlloc::createGraphicBuffer(w=%d, h=%d, format=%#x) "
+             "failed (%s), handle=%p",
+               w, h, format, strerror(-err), graphicBuffer->handle);
+#else
         ALOGE("GraphicBufferAlloc::createGraphicBuffer(w=%d, h=%d) "
              "failed (%s), handle=%p",
                 w, h, strerror(-err), graphicBuffer->handle);
+#endif
         return 0;
     }
     return graphicBuffer;
